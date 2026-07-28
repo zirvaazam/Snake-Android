@@ -9,12 +9,14 @@ import javax.microedition.khronos.opengles.GL10
  * Performance-optimized rendering loop snippet using OpenGL ES 3.0.
  * Designed for 60 FPS by avoiding garbage collection spikes.
  */
-class SnakeRenderer : GLSurfaceView.Renderer {
+class SnakeRenderer(private val batterySaverMode: Boolean = false) : GLSurfaceView.Renderer {
     
     // Pre-allocated matrices to avoid GC overhead during rendering loop
     private val viewMatrix = FloatArray(16)
     private val projectionMatrix = FloatArray(16)
     private val mvpMatrix = FloatArray(16)
+    
+    private var lastDrawTime = 0L
 
     override fun onSurfaceCreated(unused: GL10, config: EGLConfig) {
         // Set the background frame color to a space-like dark theme
@@ -29,6 +31,15 @@ class SnakeRenderer : GLSurfaceView.Renderer {
     }
 
     override fun onDrawFrame(unused: GL10) {
+        val currentTime = System.currentTimeMillis()
+        if (batterySaverMode) {
+            val elapsed = currentTime - lastDrawTime
+            if (elapsed < 33) {
+                Thread.sleep(33 - elapsed)
+            }
+        }
+        lastDrawTime = System.currentTimeMillis()
+        
         // Clear color and depth buffers
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT or GLES30.GL_DEPTH_BUFFER_BIT)
         

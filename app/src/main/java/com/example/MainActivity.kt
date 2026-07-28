@@ -1,7 +1,12 @@
 package com.example
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.opengl.GLSurfaceView
 import android.os.Build
 import android.os.Bundle
@@ -9,33 +14,44 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.foundation.Canvas
-import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Pause
+import androidx.compose.ui.viewinterop.AndroidView
+import com.example.ui.theme.MyApplicationTheme
+import java.util.Calendar
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
-import com.example.ui.theme.MyApplicationTheme
+import kotlin.random.Random
 
 class MainActivity : ComponentActivity() {
 
     private lateinit var configManager: GameConfigurationManager
+    private lateinit var prefsManager: GamePreferencesManager
     
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -48,6 +64,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         
         configManager = GameConfigurationManager(this)
+        prefsManager = GamePreferencesManager(this)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             requestPermissionLauncher.launch(
@@ -72,6 +89,7 @@ class MainActivity : ComponentActivity() {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     GameScreen(
                         configManager = configManager,
+                        prefsManager = prefsManager,
                         modifier = Modifier.padding(innerPadding)
                     )
                 }
@@ -80,27 +98,72 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+data class DailyChallenge(val level: Int, val speedMultiplier: Float)
+
+fun getDailyChallenge(): DailyChallenge {
+    val calendar = Calendar.getInstance()
+    val seed = calendar.get(Calendar.YEAR) * 10000 + (calendar.get(Calendar.MONTH) + 1) * 100 + calendar.get(Calendar.DAY_OF_MONTH)
+    val random = Random(seed)
+    return DailyChallenge(
+        level = random.nextInt(47) + 1,
+        speedMultiplier = 1.0f + random.nextFloat()
+    )
+}
+
 @Composable
-fun GameScreen(configManager: GameConfigurationManager, modifier: Modifier = Modifier) {
+fun GameScreen(configManager: GameConfigurationManager, prefsManager: GamePreferencesManager, modifier: Modifier = Modifier) {
     var isPlaying by remember { mutableStateOf(false) }
     var isPaused by remember { mutableStateOf(false) }
-    var showDevOverlay by remember { mutableStateOf(false) }
+    var batterySaverMode by remember { mutableStateOf(prefsManager.batterySaverMode) }
+    var accelerometerSteering by remember { mutableStateOf(prefsManager.accelerometerSteering) }
+    var currentPalette by remember { mutableStateOf(prefsManager.snakeColorPalette) }
+    val dailyChallenge = remember { getDailyChallenge() }
+    
+    // 3D Entry Animation states
+    var visible by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        visible = true
+    }
+    val alpha by animateFloatAsState(
+        targetValue = if (visible) 1f else 0f,
+        animationSpec = tween(durationMillis = 1200)
+    )
+    val scale by animateFloatAsState(
+        targetValue = if (visible) 1f else 0.8f,
+        animationSpec = tween(durationMillis = 1200)
+    )
 
     if (isPlaying) {
+        val context = LocalContext.current
+        DisposableEffect(accelerometerSteering) {
+            var listener: SensorEventListener? = null
+            var sensorManager: SensorManager? = null
+            if (accelerometerSteering) {
+                sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
+                val accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+                listener = object : SensorEventListener {
+                    override fun onSensorChanged(event: SensorEvent?) {
+                        // event?.values -> Handle tilt steering
+                    }
+                    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+                }
+                sensorManager.registerListener(listener, accelerometer, SensorManager.SENSOR_DELAY_GAME)
+            }
+            onDispose {
+                listener?.let { sensorManager?.unregisterListener(it) }
+            }
+        }
+        
         Box(modifier = modifier.fillMaxSize()) {
             AndroidView(
                 factory = { context ->
                     GLSurfaceView(context).apply {
                         setEGLContextClientVersion(3)
-                        setRenderer(SnakeRenderer())
+                        setRenderer(SnakeRenderer(batterySaverMode))
                     }
                 },
                 modifier = Modifier.fillMaxSize()
             )
-
-            if (showDevOverlay) {
-                DeveloperHexOverlay(modifier = Modifier.fillMaxSize())
-            }
 
             // HUD
             Row(
@@ -115,19 +178,6 @@ fun GameScreen(configManager: GameConfigurationManager, modifier: Modifier = Mod
                         imageVector = Icons.Default.Pause,
                         contentDescription = "Pause",
                         tint = MaterialTheme.colorScheme.onBackground
-                    )
-                }
-                
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        "DEV MODE", 
-                        color = MaterialTheme.colorScheme.onBackground,
-                        style = MaterialTheme.typography.labelSmall
-                    )
-                    Switch(
-                        checked = showDevOverlay, 
-                        onCheckedChange = { showDevOverlay = it },
-                        modifier = Modifier.padding(start = 8.dp)
                     )
                 }
             }
@@ -149,6 +199,8 @@ fun GameScreen(configManager: GameConfigurationManager, modifier: Modifier = Mod
                 .fillMaxSize()
                 .background(MaterialTheme.colorScheme.background)
                 .padding(24.dp)
+                .alpha(alpha)
+                .scale(scale)
         ) {
             // App Header
             Column(
@@ -176,8 +228,72 @@ fun GameScreen(configManager: GameConfigurationManager, modifier: Modifier = Mod
                 )
             }
 
+            // Daily Challenge
+            Spacer(modifier = Modifier.height(16.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(12.dp))
+                    .border(1.dp, MaterialTheme.colorScheme.onBackground.copy(alpha = 0.1f), RoundedCornerShape(12.dp))
+                    .padding(16.dp)
+            ) {
+                Column {
+                    Text("DAILY CHALLENGE", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text("Level: ${dailyChallenge.level}", color = MaterialTheme.colorScheme.onBackground, style = MaterialTheme.typography.bodyMedium)
+                    Text("Speed: ${"%.1f".format(dailyChallenge.speedMultiplier)}x", color = MaterialTheme.colorScheme.onBackground, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+
             // Main Space
             Spacer(modifier = Modifier.weight(1f))
+
+            // Preferences
+            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                // Color Palette
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                    Text("Snake Color", color = MaterialTheme.colorScheme.onBackground, style = MaterialTheme.typography.bodyMedium)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        val palettes = listOf(Color.Green, Color.Cyan, Color.Magenta)
+                        palettes.forEachIndexed { index, color ->
+                            Box(
+                                modifier = Modifier
+                                    .size(24.dp)
+                                    .background(color, CircleShape)
+                                    .border(if (currentPalette == index) 2.dp else 0.dp, Color.White, CircleShape)
+                                    .clickable {
+                                        currentPalette = index
+                                        prefsManager.snakeColorPalette = index
+                                    }
+                            )
+                        }
+                    }
+                }
+                // Battery Saver
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                    Text("Battery Saver (30 FPS)", color = MaterialTheme.colorScheme.onBackground, style = MaterialTheme.typography.bodyMedium)
+                    Switch(
+                        checked = batterySaverMode,
+                        onCheckedChange = { 
+                            batterySaverMode = it
+                            prefsManager.batterySaverMode = it
+                        }
+                    )
+                }
+                // Accelerometer Steering
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                    Text("Tilt Steering", color = MaterialTheme.colorScheme.onBackground, style = MaterialTheme.typography.bodyMedium)
+                    Switch(
+                        checked = accelerometerSteering,
+                        onCheckedChange = { 
+                            accelerometerSteering = it
+                            prefsManager.accelerometerSteering = it
+                        }
+                    )
+                }
+            }
+            
+            Spacer(modifier = Modifier.height(24.dp))
 
             // Bottom Action Bar
             Column(
@@ -228,43 +344,6 @@ fun GameScreen(configManager: GameConfigurationManager, modifier: Modifier = Mod
             }
         }
     }
-}
-
-@Composable
-fun DeveloperHexOverlay(modifier: Modifier = Modifier) {
-    Canvas(modifier = modifier) {
-        val hexRadius = 50f
-        val hexWidth = sqrt(3f) * hexRadius
-        val hexHeight = 2f * hexRadius
-        
-        for (q in -5..5) {
-            for (r in -5..5) {
-                val x = (size.width / 2) + hexRadius * (1.5f * q)
-                val y = (size.height / 2) + hexRadius * (sqrt(3f) / 2f * q + sqrt(3f) * r)
-                
-                drawHexagon(x, y, hexRadius, color = Color.Green.copy(alpha = 0.5f))
-            }
-        }
-    }
-}
-
-fun DrawScope.drawHexagon(centerX: Float, centerY: Float, radius: Float, color: Color) {
-    val path = Path()
-    for (i in 0..6) {
-        val angle = Math.PI / 3.0 * i
-        val x = centerX + radius * cos(angle).toFloat()
-        val y = centerY + radius * sin(angle).toFloat()
-        if (i == 0) {
-            path.moveTo(x, y)
-        } else {
-            path.lineTo(x, y)
-        }
-    }
-    drawPath(
-        path = path,
-        color = color,
-        style = Stroke(width = 2f)
-    )
 }
 
 @Composable
