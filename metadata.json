@@ -1,0 +1,6 @@
+{
+  "name": "Snake",
+  "description": "3D Snake Game on a Hexagonal Grid",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
